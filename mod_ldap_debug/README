@@ -1,0 +1,5 @@
+A debug module to add to your server to turn on LDAP library SDK debugging. LDAP messages usually end up in the ErrorLog defined in the base/global config.
+
+In global scope: LDAPDebugLevel 7 
+
+Included in 2.4 and later.
