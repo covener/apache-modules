@@ -3,3 +3,24 @@ A debug module to add to your server to turn on LDAP library SDK debugging. LDAP
 In global scope: LDAPDebugLevel 7 
 
 Included in 2.4 and later.
+
+Install/Config
+
+    Normal users: Built with simple apxs -cia mod_ldap_debug
+    Debian/Ubuntu Users, as root:
+
+      echo "LoadModule ldap_debug_module /usr/lib/apache2/modules/mod_ldap_debug.so" >  /etc/apache2/mods-available/ldap_debug.load
+      a2enmod ldap_debug
+      apache2ctl restart
+      
+    Set LDAPDebugLevel in a vhost or base config 
+
+Notes
+
+    Use 65535 for Tivoli Directory Server or Apache HTTP Server on z/OS
+    "LDAPDebugLevel 7" is verbose for OpenLDAP.
+    Not tested on NSS or Netware, not expected to work on Windows
+
+    Windows 2008 and Vista have a nifty trace feature: http://msdn.microsoft.com/en-us/library/aa366152%28VS.85%29.aspx 
+
+
