@@ -1,0 +1,22 @@
+mod_ibmallgroups works in tandem with mod_authnz_ldap in Apache 2.2.x to allow authorization to occur based on the result of the proprietary ibm-allGroups extension
+
+ibm-allGroups is an LDAP attribute you can query, but not use in a filter. if you have a database background, this is analogous to a column name that can be used in a SELECT but not in a comparison with WHERE.
+
+ibm-allGroups is interesting from an authorization perspective because it automatically resolves any kind of nested or dynamic group memberships for a given userid.
+
+See http://publib.boulder.ibm.com/infocenter/tivihelp/v2r1/index.jsp?topic=/com.ibm.IBMDS.doc_5.2/admin_gd263.htm
+
+Configuration Example
+
+LoadModule ldap_module modules/mod_ldap.so
+LoadModule authnz_ldap_module modules/mod_authnz_ldap.so
+LoadModule ibmallgroups_module modules/mod_ibmallgroups.so
+<Location />
+  AuthLDAPURL ldaps://example.com/ou=foo,o=example.com.com?mail,ibm-allGroups?sub?
+  AuthBasicProvider ldap
+  AuthType Basic
+  AuthName fakerealm
+  ibmallgroupsattr ibm-allgroups
+  require ldap-ibmallgroups "cn=mygrp,o=myorg"
+</Location>
+
