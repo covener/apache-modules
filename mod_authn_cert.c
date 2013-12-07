@@ -29,7 +29,7 @@
 
 #include "mod_ssl.h" /* ssl_var_lookup */
 
-module AP_MODULE_DECLARE_DATA authn_certificate_module;
+module AP_MODULE_DECLARE_DATA authn_cert_module;
 
 typedef enum {
   cert_disabled = 0,
@@ -68,7 +68,7 @@ static int certificate_check_authn(request_rec *r)
 {
     const char *user, *err;
     cert_dconf *conf = (cert_dconf *) ap_get_module_config(r->per_dir_config, 
-                                            &authn_certificate_module);
+                                            &authn_cert_module);
 
     if (conf->mode == cert_disabled || conf->username_str == NULL) {
         ap_log_rerror(APLOG_MARK, APLOG_TRACE2, 0, r, "authn_cert is is disabled, mode=%d, username=%s", conf->mode, conf->username_str);
@@ -140,7 +140,7 @@ static void authn_certificate_register_hooks(apr_pool_t *p) {
     ap_hook_post_config(certificate_post_config, NULL, NULL, APR_HOOK_MIDDLE);
 }
 
-AP_DECLARE_MODULE(authn_certificate) = {
+AP_DECLARE_MODULE(authn_cert) = {
     STANDARD20_MODULE_STUFF,
     create_cert_dconf,
     merge_cert_dconf,
