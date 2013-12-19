@@ -27,6 +27,7 @@
 #include "mod_auth.h"
 #include "ap_expr.h"
 
+#include "http_main.h" /* ap_server_conf */
 #include "mod_ssl.h" /* ssl_var_lookup */
 
 module AP_MODULE_DECLARE_DATA authn_cert_module;
@@ -85,12 +86,12 @@ static int certificate_check_authn(request_rec *r)
     user = ap_expr_str_exec(r, conf->username, &err);
 
     if (err) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO()
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, 
                       "could not evaluate user expression for URI '%s': %s", r->uri, err);
         return HTTP_INTERNAL_SERVER_ERROR;
     }
     if (!user || !*user) { 
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO()
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, 
                       "empty user expression for URI '%s': %s", r->uri, err);
         return DECLINED;
     }
@@ -104,7 +105,6 @@ static const char *add_cert_expr(cmd_parms * cmd, void *config, const char *args
     const char *err;
     const char *userexpr = ap_getword_conf(cmd->pool, &args);
 
-
     cert_dconf *conf = (cert_dconf *) config;
     conf->username_str = userexpr;
     conf->username = ap_expr_parse_cmd(cmd, conf->username_str, AP_EXPR_FLAG_STRING_RESULT,
@@ -113,6 +113,12 @@ static const char *add_cert_expr(cmd_parms * cmd, void *config, const char *args
         return apr_psprintf(cmd->pool,
                 "Could not set username expression '%s': %s", userexpr, err);
     }
+    return NULL;
+}
+static const char *add_cert_mode(cmd_parms * cmd, void *config, int arg)
+{
+    cert_dconf *conf = (cert_dconf *) config;
+    conf->mode = arg;
     return NULL;
 }
 
@@ -129,8 +135,7 @@ static const command_rec authn_certif_cmds[] = {
     AP_INIT_RAW_ARGS("CertificateUsernameExpression", add_cert_expr,
         NULL, OR_AUTHCFG, 
         "An expression to determine the username based on a client certificate"),
-    AP_INIT_FLAG("CertificateUsername", ap_set_flag_slot, 
-        (void*)APR_OFFSETOF(cert_dconf, mode), OR_AUTHCFG, 
+    AP_INIT_FLAG("CertificateUsername", add_cert_mode, NULL, OR_AUTHCFG, 
         "Enable/Disable using certificates for authentication. (ON or OFF)"),
     {NULL}
 };
