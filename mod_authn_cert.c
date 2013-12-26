@@ -45,6 +45,7 @@ typedef struct {
 } cert_dconf;
 
 static APR_OPTIONAL_FN_TYPE(ssl_var_lookup) *ssl_var_lookup = NULL;
+static APR_OPTIONAL_FN_TYPE(ssl_is_https) *ssl_is_https = NULL;
 
 static void *create_cert_dconf(apr_pool_t *p, char *d)
 {
@@ -75,7 +76,12 @@ static int certificate_check_authn(request_rec *r)
         ap_log_rerror(APLOG_MARK, APLOG_TRACE2, 0, r, "authn_cert is is disabled, mode=%d, username=%s", conf->mode, conf->username_str);
         return DECLINED;
     }
-  
+ 
+    if (!ssl_is_https || !ssl_is_https(r->connection)) { 
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE2, 0, r, "No SSL");
+        return DECLINED;
+    }
+
     if (!ssl_var_lookup || 
         (!ssl_var_lookup(r->pool, r->server, r->connection, r, "SSL_CLIENT_CERT") && 
          !ssl_var_lookup(r->pool, r->server, r->connection, r, "SSL_CLIENT_CERTBODY"))) { 
@@ -128,6 +134,7 @@ static int certificate_post_config(apr_pool_t *p,
                                    server_rec *s)
 {
     ssl_var_lookup = APR_RETRIEVE_OPTIONAL_FN(ssl_var_lookup);
+    ssl_is_https = APR_RETRIEVE_OPTIONAL_FN(ssl_is_https);
     return OK;
 }
 

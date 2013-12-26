@@ -36,6 +36,7 @@
 #include "mod_auth.h"
 #include "ap_provider.h"
 
+#include "mod_ssl.h" /* ssl_var_lookup */
 #include "http_main.h" /* ap_server_conf */
 
 module AP_MODULE_DECLARE_DATA authn_fakebasic_module;
@@ -46,6 +47,9 @@ typedef struct {
     const char *user_envvar;
 } fakebasic_dconf;
 
+static APR_OPTIONAL_FN_TYPE(ssl_var_lookup) *ssl_var_lookup = NULL;
+static APR_OPTIONAL_FN_TYPE(ssl_is_https) *ssl_is_https = NULL;
+ 
 static void *create_fakebasic_dconf(apr_pool_t *p, char *d)
 {
     fakebasic_dconf *conf = apr_pcalloc(p, sizeof(*conf));
@@ -93,12 +97,17 @@ static authn_status check_password(request_rec *r, const char *user, const char 
     fakebasic_dconf *dconf = ap_get_module_config(r->per_dir_config, &authn_fakebasic_module);
   
     if (!password || *password == '\0') { 
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "no password");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "No password");
         return AUTH_USER_NOT_FOUND;
     }
 
+    if (!ssl_is_https || !ssl_is_https(r->connection)) {
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE2, 0, r, "No SSL");
+        return DECLINED;
+    }
+
     if (!ap_strstr_c(user,"=")) {  
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "no password");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "r->user doesn't look like a DN");
         return AUTH_USER_NOT_FOUND;
     }
 
@@ -126,6 +135,17 @@ static authn_status check_password(request_rec *r, const char *user, const char 
     return AUTH_DENIED;
 
 }
+static int certificate_post_config(apr_pool_t *p,
+                                   apr_pool_t *plog,
+                                   apr_pool_t *ptemp,
+                                   server_rec *s)
+{
+    ssl_var_lookup = APR_RETRIEVE_OPTIONAL_FN(ssl_var_lookup);
+    ssl_is_https = APR_RETRIEVE_OPTIONAL_FN(ssl_is_https);
+    return OK;
+}
+
+
 static const authn_provider authn_fakebasic_provider =
 {
     &check_password,
@@ -135,6 +155,7 @@ static const authn_provider authn_fakebasic_provider =
 static void authn_fakebasic_register_hooks(apr_pool_t *p) {
     ap_register_provider(p, AUTHN_PROVIDER_GROUP, "fakebasic", "0",
                          &authn_fakebasic_provider);
+    ap_hook_post_config(certificate_post_config, NULL, NULL, APR_HOOK_MIDDLE);
 }
 
 static const command_rec authn_fakebasic_cmds[] = {
