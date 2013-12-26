@@ -17,6 +17,12 @@
 
 /* Accept SSLFakeBasic in lieu of Basic Authentication without mocking up a foo:password file.
  * - Optionally transform the r->user from SSL with a regex
+ * - Optionally replace r->user with an environment variable:
+ *
+ *       RewriteEngine on
+ *       RewriteCond %{ENV:SSL_CLIENT_CN} !^$
+ *       RewriteRule .* - [E=ssl-username:%{ENV:SSL_CLIENT_CN}]
+
  * In 2.4 and later, use mod_authn_cert instead, which does not require SSLFakeBasic.
  */
 
@@ -37,6 +43,7 @@ module AP_MODULE_DECLARE_DATA authn_fakebasic_module;
 typedef struct {
     ap_regex_t *dn_regex; 
     const char *dn_subst;
+    const char *user_envvar;
 } fakebasic_dconf;
 
 static void *create_fakebasic_dconf(apr_pool_t *p, char *d)
@@ -53,6 +60,7 @@ static void *merge_fakebasic_dconf(apr_pool_t *p, void *basev, void *overridesv)
 
    conf->dn_subst     =    (overrides->dn_subst == NULL) ? base->dn_subst : overrides->dn_subst;
    conf->dn_regex     =    (overrides->dn_regex == NULL) ? base->dn_regex : overrides->dn_regex;
+   conf->user_envvar =    (overrides->user_envvar== NULL) ? base->user_envvar: overrides->user_envvar;
    return conf;
 }
 
@@ -74,16 +82,36 @@ static const char *add_fakebasic_regex(cmd_parms * cmd, void *config, const char
     return NULL;
 }
 
-static authn_status check_password(request_rec *r, const char *user,
-                                   const char *password)
+static const char *add_fakebasic_userenvvar(cmd_parms * cmd, void *config, const char *arg1)
+{
+    fakebasic_dconf *conf = (fakebasic_dconf *) config;
+    conf->user_envvar = arg1;
+    return NULL;
+}
+static authn_status check_password(request_rec *r, const char *user, const char *password)
 {
     fakebasic_dconf *dconf = ap_get_module_config(r->per_dir_config, &authn_fakebasic_module);
   
-    if (!password || *password == '\0') return AUTH_USER_NOT_FOUND;
-    if (!ap_strstr(user,"=")) return AUTH_USER_NOT_FOUND;
+    if (!password || *password == '\0') { 
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "no password");
+        return AUTH_USER_NOT_FOUND;
+    }
+
+    if (!ap_strstr_c(user,"=")) {  
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "no password");
+        return AUTH_USER_NOT_FOUND;
+    }
 
     if (!strcasecmp(password, "password")) {
-        if (dconf->dn_regex) { 
+        if (dconf->user_envvar) { 
+            const char *sub = apr_table_get(r->subprocess_env, dconf->user_envvar);
+            if (!sub) { 
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "envvar %s not set", dconf->user_envvar);
+                return AUTH_USER_NOT_FOUND;
+            }
+            r->user = apr_pstrdup(r->pool, sub);
+        }
+        else if (dconf->dn_regex) { 
             ap_regmatch_t regm[AP_MAX_REG_MATCH];
             if (!ap_regexec(dconf->dn_regex, user, AP_MAX_REG_MATCH, regm, 0)) {
                 char *substituted = ap_pregsub(r->pool, dconf->dn_subst, user, AP_MAX_REG_MATCH, regm);
@@ -92,6 +120,7 @@ static authn_status check_password(request_rec *r, const char *user,
                 }
             }
         }
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "auth granted");
         return AUTH_GRANTED;
     }
     return AUTH_DENIED;
@@ -112,6 +141,9 @@ static const command_rec authn_fakebasic_cmds[] = {
     AP_INIT_TAKE2("SSLFakeBasicReplace", add_fakebasic_regex,
         NULL, OR_AUTHCFG, 
         "An expression to determine the username based on a client certificate (modifies the copy of the DN)"),
+    AP_INIT_TAKE1("SSLFakeBasicUsernameEnvvar", add_fakebasic_userenvvar,
+        NULL, OR_AUTHCFG, 
+        "Replace r->user with the value of the named environmen variable"),
     {NULL}
 };
 
