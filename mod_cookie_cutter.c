@@ -192,7 +192,9 @@ static int checklen(void *v, const char *key, const char *val)
         }
     }
 
-    apr_table_set(ed->r->headers_out, "CCWARN", msg);
+    if (ed->dirconf->debug) { 
+        apr_table_set(ed->r->headers_out, "CCWARN", apr_table_get(ed->r->subprocess_env, "ibm-long-cookie"));
+    }
     return 1;
 }
 
