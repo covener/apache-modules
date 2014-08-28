@@ -40,6 +40,7 @@ typedef struct {
     apr_array_header_t *setpath;
     int max_cookie;
     int max_setcookie;
+    int debug;
 } cc_dirconf;
 
 typedef struct {
@@ -147,6 +148,7 @@ static int checklen(void *v, const char *key, const char *val)
 {
     edit_do *ed = (edit_do *)v;
     int len = strlen(val);
+    char *msg = NULL;
     if (ed->dirconf->max_cookie > 0 && !strcasecmp(key, "Cookie")) { 
         char *copy = apr_pstrdup(ed->r->pool, val);
         char *name, *val, *last;
@@ -160,7 +162,7 @@ static int checklen(void *v, const char *key, const char *val)
             val_len = val ? strlen(val) : 0;
             if (val && val_len > ed->dirconf->max_cookie) { 
                 const char *oldmsg = apr_table_get(ed->r->subprocess_env, "ibm-long-cookie");
-                char *msg = apr_psprintf(ed->r->pool, "C:%s|%d", name, val_len);
+                msg = apr_psprintf(ed->r->pool, "C:%s|%d", name, val_len);
                 ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, ed->r, "Cookie too long: URI=%s: %s", ed->r->uri, msg);
                 apr_table_set(ed->r->subprocess_env, "ibm-long-cookie", apr_psprintf(ed->r->pool, "%s%s%s", 
                             oldmsg ? oldmsg : "", 
@@ -176,7 +178,7 @@ static int checklen(void *v, const char *key, const char *val)
             const char *cval = cookie_get_val(ed->r, val, len);
             int cval_len = cval ? strlen(cval) : 0;
             if (cval_len > ed->dirconf->max_setcookie) {
-                char *msg = apr_psprintf(ed->r->pool, "SC:%s|P:%s|D:%s|%d", 
+                msg = apr_psprintf(ed->r->pool, "SC:%s|P:%s|D:%s|%d", 
                         cname,
                         cookie_get_field(ed->r, val, len, "Path"), 
                         cookie_get_field(ed->r, val, len, "Domain"), 
@@ -190,6 +192,7 @@ static int checklen(void *v, const char *key, const char *val)
         }
     }
 
+    apr_table_set(ed->r->headers_out, "CCWARN", msg);
     return 1;
 }
 
@@ -280,6 +283,9 @@ static const command_rec cmds[] =
     AP_INIT_TAKE2("CookieForcePath", set_cookie_force_path, NULL, OR_FILEINFO, "Change set-cookie path"),
     AP_INIT_TAKE1("CookieMaxSetCookie", set_cookie_maxsetcookie, NULL, OR_FILEINFO, "report on set-cookie greater than specified bytes"),
     AP_INIT_TAKE1("CookieMaxCookie", set_cookie_maxcookie, NULL, OR_FILEINFO, "report on set-cookie greater than specified bytes"),
+    AP_INIT_FLAG("CookieMaxSetHeader", ap_set_flag_slot,
+                  (void *)APR_OFFSETOF(cc_dirconf, debug), 
+                  OR_FILEINFO, "Send CCWARN response header with log contents"),
     {NULL}
 };
 
