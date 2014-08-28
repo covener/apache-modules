@@ -33,6 +33,7 @@ static const char filter_name[] = "BUCKET_DEBUG";
 module AP_MODULE_DECLARE_DATA bucket_debug_module;
 
 static const char *mode2string[] = { "AP_MODE_READBYTES", "AP_MODE_GETLINE", "AP_MODE_EATCRLF", "AP_MODE_SPECULATIVE", "AP_MODE_EXHAUSTIVE", "AP_MODE_INIT"};
+static const char *block2string[] = { "APR_BLOCK_READ", "APR_NONBLOCK_READ"};
 
 static apr_status_t debug_in_filter(ap_filter_t *f,
                                     apr_bucket_brigade *bb,
@@ -44,7 +45,7 @@ static apr_status_t debug_in_filter(ap_filter_t *f,
     conn_rec *c = f->c;
     apr_status_t rv;
 
-    ap_log_cerror(APLOG_MARK, APLOG_TRACE4, 0, c, "entry, bb=%pp block=%d mode=%s readbytes=%"APR_OFF_T_FMT, bb, block, mode2string[mode], readbytes); 
+    ap_log_cerror(APLOG_MARK, APLOG_TRACE4, 0, c, "entry, bb=%pp block=%s mode=%s readbytes=%"APR_OFF_T_FMT, bb, block2string[block], mode2string[mode], readbytes); 
 
     rv = ap_get_brigade(f->next, bb, mode, block, readbytes);
     if (rv != APR_SUCCESS) { 
