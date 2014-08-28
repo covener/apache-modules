@@ -60,8 +60,15 @@ static const char *cookie_get_name(request_rec *r, const char *headerval, int in
     char *last1;
     return apr_strtok(apr_pstrdup(r->pool, headerval), "=;", &last1);
 }
+static const char *cookie_get_val(request_rec *r, const char *headerval, int inlen) { 
+    char *last1;
+    char *copy = apr_pstrdup(r->pool, headerval);
+    apr_strtok(copy, "=;", &last1);
+    return apr_strtok(NULL, "=;", &last1);
+}
 
-static const char *cookie_get_field(request_rec *r, const char *headerval, int inlen, char *field) { 
+
+static const char *cookie_get_field(request_rec *r, const char *headerval, int inlen, const char *field) { 
     char *setcookie, *last1, *next;
     setcookie = apr_pstrdup(r->pool, headerval);
     apr_strtok(setcookie, ";", &last1); /* throw away cookie name */
@@ -86,8 +93,8 @@ static const char *cc_setpath(request_rec *r, const char *headerval, const char 
         char *eqlast;
         char *pathstart = next;
         char *justpath = apr_strtok(next, "=", &eqlast);
-        while(next && *next == ' ') next++;
-        if (!strcasecmp(next, "Path")) { 
+        while(justpath && *justpath== ' ') justpath++;
+        if (!strcasecmp(justpath, "Path")) { 
             /* If there's a Path, we'll cut it out and insert the new one */
             char *suffix = NULL;
             next = apr_strtok(NULL, "=", &eqlast);
@@ -154,7 +161,7 @@ static int checklen(void *v, const char *key, const char *val)
             if (val && val_len > ed->dirconf->max_cookie) { 
                 const char *oldmsg = apr_table_get(ed->r->subprocess_env, "ibm-long-cookie");
                 char *msg = apr_psprintf(ed->r->pool, "C:%s|%d", name, val_len);
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, ed->r, "Cookie too long: %s", msg);
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, ed->r, "Cookie too long: URI=%s: %s", ed->r->uri, msg);
                 apr_table_set(ed->r->subprocess_env, "ibm-long-cookie", apr_psprintf(ed->r->pool, "%s%s%s", 
                             oldmsg ? oldmsg : "", 
                             oldmsg ? ", ": "", 
@@ -165,16 +172,21 @@ static int checklen(void *v, const char *key, const char *val)
     if (ed->dirconf->max_setcookie > 0 && !strcasecmp(key, "Set-Cookie")) { 
         if (len > ed->dirconf->max_setcookie) { 
             const char *oldmsg = apr_table_get(ed->r->subprocess_env, "ibm-long-cookie");
-            char *msg = apr_psprintf(ed->r->pool, "SC:%s|P:%s|D:%s|%d", 
-                          cookie_get_name(ed->r, val, len), 
-                          cookie_get_field(ed->r, val, len, "Path"), 
-                          cookie_get_field(ed->r, val, len, "Domain"), 
-                          len );
-            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, ed->r, "Set-Cookie too long: %s", msg);
-            apr_table_set(ed->r->subprocess_env, "ibm-long-cookie", apr_psprintf(ed->r->pool, "%s%s%s", 
-                          oldmsg ? oldmsg : "", 
-                          oldmsg ? ", ": "", 
-                          msg));
+            const char *cname = cookie_get_name(ed->r, val, len);
+            const char *cval = cookie_get_val(ed->r, val, len);
+            int cval_len = cval ? strlen(cval) : 0;
+            if (cval_len > ed->dirconf->max_setcookie) {
+                char *msg = apr_psprintf(ed->r->pool, "SC:%s|P:%s|D:%s|%d", 
+                        cname,
+                        cookie_get_field(ed->r, val, len, "Path"), 
+                        cookie_get_field(ed->r, val, len, "Domain"), 
+                        cval_len);
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, ed->r, "Set-Cookie too long URI=%s: %s", ed->r->uri, msg);
+                apr_table_set(ed->r->subprocess_env, "ibm-long-cookie", apr_psprintf(ed->r->pool, "%s%s%s", 
+                            oldmsg ? oldmsg : "", 
+                            oldmsg ? ", ": "", 
+                            msg));
+            }
         }
     }
 
