@@ -38,6 +38,9 @@ module AP_MODULE_DECLARE_DATA cookie_cutter_module;
 
 typedef struct {
     apr_array_header_t *setpath;
+    apr_array_header_t *reportpathdomain;
+    apr_array_header_t *reportpath;
+    apr_array_header_t *reportdomain;
     int max_cookie;
     int max_setcookie;
     int debug;
@@ -78,7 +81,13 @@ static const char *cookie_get_field(request_rec *r, const char *headerval, int i
         next = apr_strtok(next, "=", &eqlast);
         while(next && *next == ' ') next++;
         if (next && !strcasecmp(next, field)) { 
+            int retlen;
             next = apr_strtok(NULL, "=", &eqlast);
+            if (next) { 
+                retlen = strlen(next);
+                char *end = next + retlen -1;
+                while(*end-- == ' ') *(end+1) = '\0';
+            }
             return next;
         }
     }
@@ -143,12 +152,84 @@ static int edit_cookie(void *v, const char *key, const char *val)
     apr_table_addn(ed->t, key, repl);
     return 1;
 }
+static int checkpathdomain(void *v, const char *key, const char *val)
+{
+    edit_do *ed = (edit_do *)v;
+    int len = val ? strlen(val) : 0;
+    const char *path   = cookie_get_field(ed->r, val, len, "Path");
+    const char *domain = cookie_get_field(ed->r, val, len, "Domain");
+    char *msg = NULL;
+
+    if (path && domain && !strcasecmp(ed->hdr->path, path) && !strcasecmp(ed->hdr->cookie_name, domain)) { 
+        const char *oldmsg = apr_table_get(ed->r->subprocess_env, "ibm-long-cookie");
+        msg = apr_psprintf(ed->r->pool, "CPD:%s",val);
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, ed->r, "Domain/Path combo banned: URI=%s: %s", ed->r->uri, msg);
+        apr_table_set(ed->r->subprocess_env, "ibm-long-cookie", apr_psprintf(ed->r->pool, "%s%s%s", 
+                            oldmsg ? oldmsg : "", 
+                            oldmsg ? ", ": "", 
+                            msg));
+
+    }
+    if (ed->dirconf->debug) { 
+        apr_table_set(ed->r->headers_out, "CCWARN", apr_table_get(ed->r->subprocess_env, "ibm-long-cookie"));
+    }
+    return 1;
+}
+
+static int checkdomain(void *v, const char *key, const char *val)
+{
+    edit_do *ed = (edit_do *)v;
+    int len = val ? strlen(val) : 0;
+    const char *domain = cookie_get_field(ed->r, val, len, "Domain");
+    char *msg = NULL;
+
+    if (domain && !strcasecmp(ed->hdr->cookie_name, domain)) { 
+        const char *oldmsg = apr_table_get(ed->r->subprocess_env, "ibm-long-cookie");
+        msg = apr_psprintf(ed->r->pool, "CPD:%s",val);
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, ed->r, "Domain %s banned: URI=%s: %s", domain, ed->r->uri, msg);
+        apr_table_set(ed->r->subprocess_env, "ibm-long-cookie", apr_psprintf(ed->r->pool, "%s%s%s", 
+                            oldmsg ? oldmsg : "", 
+                            oldmsg ? ", ": "", 
+                            msg));
+
+    }
+    if (ed->dirconf->debug) { 
+        apr_table_set(ed->r->headers_out, "CCWARN", apr_table_get(ed->r->subprocess_env, "ibm-long-cookie"));
+    }
+    return 1;
+}
+
+
+static int checkpath(void *v, const char *key, const char *val)
+{
+    edit_do *ed = (edit_do *)v;
+    int len = val ? strlen(val) : 0;
+    const char *path   = cookie_get_field(ed->r, val, len, "Path");
+    char *msg = NULL;
+
+    if (path && !strcasecmp(ed->hdr->path, path)) { 
+        const char *oldmsg = apr_table_get(ed->r->subprocess_env, "ibm-long-cookie");
+        msg = apr_psprintf(ed->r->pool, "CP:%s",val);
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, ed->r, "Path %s banned: URI=%s: %s", path, ed->r->uri, msg);
+        apr_table_set(ed->r->subprocess_env, "ibm-long-cookie", apr_psprintf(ed->r->pool, "%s%s%s", 
+                            oldmsg ? oldmsg : "", 
+                            oldmsg ? ", ": "", 
+                            msg));
+
+    }
+    if (ed->dirconf->debug) { 
+        apr_table_set(ed->r->headers_out, "CCWARN", apr_table_get(ed->r->subprocess_env, "ibm-long-cookie"));
+    }
+    return 1;
+}
 
 static int checklen(void *v, const char *key, const char *val)
 {
     edit_do *ed = (edit_do *)v;
     int len = strlen(val);
     char *msg = NULL;
+#if 0
+    /* XXX This version checks each Cookie in the cookie header */
     if (ed->dirconf->max_cookie > 0 && !strcasecmp(key, "Cookie")) { 
         char *copy = apr_pstrdup(ed->r->pool, val);
         char *name, *val, *last;
@@ -169,6 +250,19 @@ static int checklen(void *v, const char *key, const char *val)
                             oldmsg ? ", ": "", 
                             msg));
             }
+        }
+    }
+#endif
+    if (ed->dirconf->max_cookie > 0 && !strcasecmp(key, "Cookie")) { 
+        int val_len = val ? strlen(val) : 0;
+        if (val && val_len > ed->dirconf->max_cookie) { 
+            const char *oldmsg = apr_table_get(ed->r->subprocess_env, "ibm-long-cookie");
+            msg = apr_psprintf(ed->r->pool, "C:%d", val_len);
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, ed->r, "Cookie too long: URI=%s: %s", ed->r->uri, msg);
+            apr_table_set(ed->r->subprocess_env, "ibm-long-cookie", apr_psprintf(ed->r->pool, "%s%s%s", 
+                        oldmsg ? oldmsg : "", 
+                        oldmsg ? ", ": "", 
+                        msg));
         }
     }
     if (ed->dirconf->max_setcookie > 0 && !strcasecmp(key, "Set-Cookie")) { 
@@ -211,8 +305,8 @@ static apr_status_t cc_output_filter(ap_filter_t *f, apr_bucket_brigade *in)
     int i = 0;
     apr_array_header_t *it;
     cc_dirconf *dirconf = ap_get_module_config(f->r->per_dir_config, &cookie_cutter_module);
-    it = dirconf->setpath;
 
+    it = dirconf->setpath;
     for (i = 0; i < it->nelts; ++i) {
         cc_entry *hdr = &((cc_entry*) (it->elts))[i];
         if (apr_table_get(f->r->headers_out, "Set-Cookie")) {
@@ -227,6 +321,47 @@ static apr_status_t cc_output_filter(ap_filter_t *f, apr_bucket_brigade *in)
             apr_table_do(add_them_all, (void *) f->r->headers_out, ed.t, NULL);
         }
     }
+
+    it = dirconf->reportpathdomain;
+    for (i = 0; i < it->nelts; ++i) {
+        if (apr_table_get(f->r->headers_out, "Set-Cookie")) {
+            cc_entry *hdr = &((cc_entry*) (it->elts))[i];
+            edit_do ed;
+            ed.hdr = hdr;
+            ed.dirconf = dirconf;
+            ed.r = f->r;
+            if (!apr_table_do(checkpathdomain, (void *) &ed, f->r->headers_out, "Set-Cookie", NULL)) { 
+                return 0;
+            }
+        }
+    }
+    it = dirconf->reportpath;
+    for (i = 0; i < it->nelts; ++i) {
+        if (apr_table_get(f->r->headers_out, "Set-Cookie")) {
+            cc_entry *hdr = &((cc_entry*) (it->elts))[i];
+            edit_do ed;
+            ed.hdr = hdr;
+            ed.dirconf = dirconf;
+            ed.r = f->r;
+            if (!apr_table_do(checkpath, (void *) &ed, f->r->headers_out, "Set-Cookie", NULL)) { 
+                return 0;
+            }
+        }
+    }
+    it = dirconf->reportdomain;
+    for (i = 0; i < it->nelts; ++i) {
+        if (apr_table_get(f->r->headers_out, "Set-Cookie")) {
+            cc_entry *hdr = &((cc_entry*) (it->elts))[i];
+            edit_do ed;
+            ed.hdr = hdr;
+            ed.dirconf = dirconf;
+            ed.r = f->r;
+            if (!apr_table_do(checkdomain, (void *) &ed, f->r->headers_out, "Set-Cookie", NULL)) { 
+                return 0;
+            }
+        }
+    }
+
 
     if (dirconf->max_cookie > 0) { 
         edit_do ed;
@@ -260,6 +395,31 @@ static const char *set_cookie_force_path(cmd_parms *cmd, void *indc, const char 
    new->path = arg2;
    return NULL;
 }
+static const char *set_cookie_report_path_domain(cmd_parms *cmd, void *indc, const char *arg1, const char *arg2) 
+{
+   cc_entry *new;
+   cc_dirconf *dirconf = (cc_dirconf*) indc;
+   new = (cc_entry *) apr_array_push(dirconf->reportpathdomain);
+   new->path = arg1;
+   new->cookie_name = arg2;
+   return NULL;
+}
+static const char *set_cookie_report_path(cmd_parms *cmd, void *indc, const char *arg1) 
+{
+   cc_entry *new;
+   cc_dirconf *dirconf = (cc_dirconf*) indc;
+   new = (cc_entry *) apr_array_push(dirconf->reportpath);
+   new->path= arg1;
+   return NULL;
+}
+static const char *set_cookie_report_domain(cmd_parms *cmd, void *indc, const char *arg1) 
+{
+   cc_entry *new;
+   cc_dirconf *dirconf = (cc_dirconf*) indc;
+   new = (cc_entry *) apr_array_push(dirconf->reportdomain);
+   new->cookie_name = arg1;
+   return NULL;
+}
 static const char *set_cookie_maxsetcookie(cmd_parms *cmd, void *indc, const char *arg1) 
 {
    cc_dirconf *dirconf = (cc_dirconf*) indc;
@@ -276,13 +436,19 @@ static const char *set_cookie_maxcookie(cmd_parms *cmd, void *indc, const char *
 static void *create_cc_dir_config(apr_pool_t *p, char *d)
 {
     cc_dirconf *conf = apr_pcalloc(p, sizeof(*conf));
-    conf->setpath= apr_array_make(p, 2, sizeof(cc_entry));
+    conf->setpath      = apr_array_make(p, 2, sizeof(cc_entry));
+    conf->reportpath   = apr_array_make(p, 2, sizeof(cc_entry));
+    conf->reportdomain = apr_array_make(p, 2, sizeof(cc_entry));
+    conf->reportpathdomain = apr_array_make(p, 2, sizeof(cc_entry));
     return conf;
 }
 
 static const command_rec cmds[] =
 {
     AP_INIT_TAKE2("CookieForcePath", set_cookie_force_path, NULL, OR_FILEINFO, "Change set-cookie path"),
+    AP_INIT_TAKE1("CookieReportPath", set_cookie_report_path, NULL, OR_FILEINFO, "Log entries with a matching path"),
+    AP_INIT_TAKE1("CookieReportDomain", set_cookie_report_domain, NULL, OR_FILEINFO, "Log entries with a matching Domain"),
+    AP_INIT_TAKE2("CookieReportPathDomain", set_cookie_report_path_domain, NULL, OR_FILEINFO, "Log entries with a matching Path and Domain"),
     AP_INIT_TAKE1("CookieMaxSetCookie", set_cookie_maxsetcookie, NULL, OR_FILEINFO, "report on set-cookie greater than specified bytes"),
     AP_INIT_TAKE1("CookieMaxCookie", set_cookie_maxcookie, NULL, OR_FILEINFO, "report on set-cookie greater than specified bytes"),
     AP_INIT_FLAG("CookieMaxSetHeader", ap_set_flag_slot,
