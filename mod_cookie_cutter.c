@@ -21,6 +21,8 @@
  *  - Insert or replace cookie paths w/o mod_proxy
  *  - Report when an incoming Cookie value looks too large
  *  - Report when an outgoing Set-Cookie header looks too large
+ * 
+ * You can use conditional logging based on 'ibm-long-cookie' to collect results
  */
 
 #include <unistd.h>
