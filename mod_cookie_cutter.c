@@ -42,6 +42,7 @@ typedef struct {
     apr_array_header_t *reportpath;
     apr_array_header_t *reportdomain;
     int max_cookie;
+    int max_each_cookie;
     int max_setcookie;
     int debug;
 } cc_dirconf;
@@ -170,7 +171,7 @@ static int checkpathdomain(void *v, const char *key, const char *val)
                             msg));
 
     }
-    if (ed->dirconf->debug) { 
+    if (ed->dirconf->debug && apr_table_get(ed->r->subprocess_env, "ibm-long-cookie")) { 
         apr_table_set(ed->r->headers_out, "CCWARN", apr_table_get(ed->r->subprocess_env, "ibm-long-cookie"));
     }
     return 1;
@@ -193,7 +194,7 @@ static int checkdomain(void *v, const char *key, const char *val)
                             msg));
 
     }
-    if (ed->dirconf->debug) { 
+    if (ed->dirconf->debug && apr_table_get(ed->r->subprocess_env, "ibm-long-cookie")) { 
         apr_table_set(ed->r->headers_out, "CCWARN", apr_table_get(ed->r->subprocess_env, "ibm-long-cookie"));
     }
     return 1;
@@ -217,7 +218,7 @@ static int checkpath(void *v, const char *key, const char *val)
                             msg));
 
     }
-    if (ed->dirconf->debug) { 
+    if (ed->dirconf->debug && apr_table_get(ed->r->subprocess_env, "ibm-long-cookie")) { 
         apr_table_set(ed->r->headers_out, "CCWARN", apr_table_get(ed->r->subprocess_env, "ibm-long-cookie"));
     }
     return 1;
@@ -228,9 +229,8 @@ static int checklen(void *v, const char *key, const char *val)
     edit_do *ed = (edit_do *)v;
     int len = strlen(val);
     char *msg = NULL;
-#if 0
-    /* XXX This version checks each Cookie in the cookie header */
-    if (ed->dirconf->max_cookie > 0 && !strcasecmp(key, "Cookie")) { 
+    /* Checks each Cookie in the cookie header */
+    if (ed->dirconf->max_each_cookie > 0 && !strcasecmp(key, "Cookie")) { 
         char *copy = apr_pstrdup(ed->r->pool, val);
         char *name, *val, *last;
         while((name = apr_strtok(copy, ";", &last))) { 
@@ -241,10 +241,10 @@ static int checklen(void *v, const char *key, const char *val)
             while(name && *name== ' ') name++;
             val  =  apr_strtok(NULL, "=", &last2);
             val_len = val ? strlen(val) : 0;
-            if (val && val_len > ed->dirconf->max_cookie) { 
+            if (val && val_len > ed->dirconf->max_each_cookie) { 
                 const char *oldmsg = apr_table_get(ed->r->subprocess_env, "ibm-long-cookie");
-                msg = apr_psprintf(ed->r->pool, "C:%s|%d", name, val_len);
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, ed->r, "Cookie too long: URI=%s: %s", ed->r->uri, msg);
+                msg = apr_psprintf(ed->r->pool, "CE:%s|%d", name, val_len);
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, ed->r, "Cookie %s too long: URI=%s: %s", name, ed->r->uri, msg);
                 apr_table_set(ed->r->subprocess_env, "ibm-long-cookie", apr_psprintf(ed->r->pool, "%s%s%s", 
                             oldmsg ? oldmsg : "", 
                             oldmsg ? ", ": "", 
@@ -252,7 +252,6 @@ static int checklen(void *v, const char *key, const char *val)
             }
         }
     }
-#endif
     if (ed->dirconf->max_cookie > 0 && !strcasecmp(key, "Cookie")) { 
         int val_len = val ? strlen(val) : 0;
         if (val && val_len > ed->dirconf->max_cookie) { 
@@ -286,7 +285,7 @@ static int checklen(void *v, const char *key, const char *val)
         }
     }
 
-    if (ed->dirconf->debug) { 
+    if (ed->dirconf->debug && apr_table_get(ed->r->subprocess_env, "ibm-long-cookie")) { 
         apr_table_set(ed->r->headers_out, "CCWARN", apr_table_get(ed->r->subprocess_env, "ibm-long-cookie"));
     }
     return 1;
@@ -432,6 +431,12 @@ static const char *set_cookie_maxcookie(cmd_parms *cmd, void *indc, const char *
    dirconf->max_cookie = atoi(arg1);
    return NULL;
 }
+static const char *set_cookie_max_each_cookie(cmd_parms *cmd, void *indc, const char *arg1) 
+{
+   cc_dirconf *dirconf = (cc_dirconf*) indc;
+   dirconf->max_each_cookie = atoi(arg1);
+   return NULL;
+}
 
 static void *create_cc_dir_config(apr_pool_t *p, char *d)
 {
@@ -450,7 +455,8 @@ static const command_rec cmds[] =
     AP_INIT_TAKE1("CookieReportDomain", set_cookie_report_domain, NULL, OR_FILEINFO, "Log entries with a matching Domain"),
     AP_INIT_TAKE2("CookieReportPathDomain", set_cookie_report_path_domain, NULL, OR_FILEINFO, "Log entries with a matching Path and Domain"),
     AP_INIT_TAKE1("CookieMaxSetCookie", set_cookie_maxsetcookie, NULL, OR_FILEINFO, "report on set-cookie greater than specified bytes"),
-    AP_INIT_TAKE1("CookieMaxCookie", set_cookie_maxcookie, NULL, OR_FILEINFO, "report on set-cookie greater than specified bytes"),
+    AP_INIT_TAKE1("CookieMaxCookie", set_cookie_maxcookie, NULL, OR_FILEINFO, "report on cookie request header greater than specified bytes"),
+    AP_INIT_TAKE1("CookieMaxEachCookie", set_cookie_max_each_cookie, NULL, OR_FILEINFO, "report on any individual cookie greater than specified bytes"),
     AP_INIT_FLAG("CookieMaxSetHeader", ap_set_flag_slot,
                   (void *)APR_OFFSETOF(cc_dirconf, debug), 
                   OR_FILEINFO, "Send CCWARN response header with log contents"),
