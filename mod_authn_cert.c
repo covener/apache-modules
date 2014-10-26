@@ -31,11 +31,6 @@
 #include "mod_ssl.h" /* ssl_var_lookup */
 
 
-/* XXX: Needed for commonality with other versions of this module */
-#ifndef IHSLOGNO
-#define IHSLOGNO(x)
-#endif
-
 module AP_MODULE_DECLARE_DATA authn_cert_module;
 
 typedef enum {
@@ -98,12 +93,12 @@ static int certificate_check_authn(request_rec *r)
     user = ap_expr_str_exec(r, conf->username, &err);
 
     if (err) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, IHSLOGNO(00001)
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, 
                       "could not evaluate user expression for URI '%s': %s", r->uri, err);
         return HTTP_INTERNAL_SERVER_ERROR;
     }
     if (!user || !*user) { 
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, IHSLOGNO(00002)
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, 
                       "empty user expression for URI '%s': %s", r->uri, err);
         return DECLINED;
     }
