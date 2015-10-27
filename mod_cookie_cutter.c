@@ -17,12 +17,15 @@
 
 
 /* covener@apache.org
- * This module lets you do unusual things with cookies:
+ * This module lets you do unusual things with cookies. It's intended for a server that proxies
+ * to a lot of origin servers that may be setting overly-broad/overly long cookies.
+ * 
+ * It allows you to:
  *  - Insert or replace cookie paths w/o mod_proxy
  *  - Report when an incoming Cookie value looks too large
  *  - Report when an outgoing Set-Cookie header looks too large
  * 
- * You can use conditional logging based on 'ibm-long-cookie' to collect results
+ * Use conditional logging based on 'ibm-long-cookie' to collect results
  */
 
 #include <unistd.h>
