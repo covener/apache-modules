@@ -15,7 +15,7 @@
  */
 
 /*
- * mod_ldap_bluepagesfix: disable TLS1.1 in GNUTLS to workaround GSKit/bluepages negotiation
+ * mod_ldap_debug: Flip global LDAP_OPT_DEBUG in LDAP SDK to debug LDAP issues.
  */
 
 #include "httpd.h"
