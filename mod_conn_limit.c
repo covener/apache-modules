@@ -15,7 +15,6 @@
  * limitations under the License.
  *
  * Based on mod_limitipconn by David Jao and Niklas Edmundsson
- *
  */
 
 /* XXX: merge config */
@@ -36,20 +35,20 @@ module AP_MODULE_DECLARE_DATA conn_limit_module;
 static int server_limit, thread_limit, maxclients;
 
 typedef struct {
-    int maxconns;                      /* Limit on number of parallel requests      */
-    int worker_threshold;              /* Free thread % threshold to enforce limits */
-    apr_ipsubnet_t **unlimited;  /* Source addresses that are not limited     */
-    unsigned int logonly:1;            /* TODO */
+    int maxconns;                 /* Limit on number of parallel requests      */
+    int worker_threshold;         /* Free thread % threshold to enforce limits */
+    apr_ipsubnet_t **unlimited;   /* Source addresses that are not limited     */
+    unsigned int logonly:1;       /* TODO */
 } dconf_t;
 
 static void *create_dirconf(apr_pool_t *p, char *path)
 {
     dconf_t *cfg = (dconf_t *) apr_pcalloc(p, sizeof (*cfg));
-    cfg->worker_threshold = 60;
+    cfg->worker_threshold = 60;   /* Default to enforcement at > 60% utilization */
     return cfg;
 }
 
-/* from mod_authz_host */
+/* from mod_authz_host, collect a list of apr_ipsubnet_t's */
 static const char *cmd_nolimit(cmd_parms *cmd, void *in_dconf, const char *a1)
 {
     const char *t, *w;
@@ -148,7 +147,7 @@ static int ip_breached(request_rec *r, dconf_t *cfg)
                 case SERVER_CLOSING:
                 case SERVER_GRACEFUL:
                     if (!strcmp(r->useragent_ip, ws_record.client)) { 
-                        if (ip_count++ >= cfg->maxconns) { 
+                        if (ip_count++ >= cfg->maxconns) {  /* we're counting ourselves */
                             return 1;
                         }
                     }
@@ -215,17 +214,16 @@ static command_rec conn_limit_cmds[] = {
 static void register_hooks(apr_pool_t *p)
 {
     ap_hook_post_config(post_config, NULL, NULL, APR_HOOK_MIDDLE);
-
     /* Let responses be served out of the cache even if they'd breach limits */
     ap_hook_access_checker(access_check, NULL, NULL, APR_HOOK_MIDDLE);
 }
 
 AP_DECLARE_MODULE(conn_limit) = {
     STANDARD20_MODULE_STUFF,
-    create_dirconf           , /* create per-dir    config structures */
-    NULL,                      /* merge  per-dir    config structures */
-    NULL,                      /* create per-server config structures */
-    NULL,                      /* merge  per-server config structures */
+    create_dirconf           , /* create per-dir    */
+    NULL,                      /* merge  per-dir    */
+    NULL,                      /* create per-server */
+    NULL,                      /* merge  per-server */
     conn_limit_cmds,           
     register_hooks
 };
