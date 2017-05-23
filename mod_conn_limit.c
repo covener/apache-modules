@@ -14,12 +14,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * Derived from mod_limitipconn    
- * Copyright (C) 2000-2012 David Jao and Niklas Edmundsson
+ * Based on mod_limitipconn by David Jao and Niklas Edmundsson
  *
- * Limit number of concurrent requests by source address.  
- * Only counts requests consuming a thread.
  */
+
+/* XXX: merge config */
 
 #include "httpd.h"
 #include "http_config.h"
@@ -34,24 +33,23 @@
 
 module AP_MODULE_DECLARE_DATA conn_limit_module;
 
-static apr_hash_t *parsed_subnets;
 static int server_limit, thread_limit, maxclients;
 
 typedef struct {
-    int maxconns;                /* Limit on number of parallel requests      */
-    int worker_threshold;        /* Free thread % threshold to enforce limits */
-    apr_ipsubnet_t *unlimited;   /* Source addresses that are not limited     */
-    unsigned int log_only:1      /* TODO */
+    int maxconns;                      /* Limit on number of parallel requests      */
+    int worker_threshold;              /* Free thread % threshold to enforce limits */
+    apr_ipsubnet_t **unlimited;  /* Source addresses that are not limited     */
+    unsigned int logonly:1;            /* TODO */
 } dconf_t;
 
-static dconf_t *create_dirconf(apr_pool_t *pconf)
+static void *create_dirconf(apr_pool_t *p, char *path)
 {
     dconf_t *cfg = (dconf_t *) apr_pcalloc(p, sizeof (*cfg));
-    cfg->ip_unlimited = apr_array_make(p, 4, sizeof(char *));
     cfg->worker_threshold = 60;
     return cfg;
 }
 
+/* from mod_authz_host */
 static const char *cmd_nolimit(cmd_parms *cmd, void *in_dconf, const char *a1)
 {
     const char *t, *w;
@@ -59,35 +57,28 @@ static const char *cmd_nolimit(cmd_parms *cmd, void *in_dconf, const char *a1)
     apr_ipsubnet_t **ip;
     apr_pool_t *ptemp = cmd->temp_pool;
     apr_pool_t *p = cmd->pool;
-    t = require_line;
+    dconf_t *cfg = (dconf_t *) in_dconf;
+    t = a1;
     while ((w = ap_getword_conf(ptemp, &t)) && w[0])
         count++;
     if (count == 0)
-        return "'require ip' requires an argument";
+        return "'ConnectionLimitUnlimitedSourceAddresses' requires an argument";
 
     ip = apr_pcalloc(p, sizeof(apr_ipsubnet_t *) * (count + 1));
-    *dconf->unlimited = ip;
+    /* XXX: can't use multiple directives */
+    cfg->unlimited = ip;
 
-    t = a1;
     while ((w = ap_getword_conf(ptemp, &t)) && w[0]) {
         char *addr = apr_pstrdup(ptemp, w);
         char *mask;
         apr_status_t rv;
-
-        if (parsed_subnets &&
-            (*ip = apr_hash_get(parsed_subnets, w, APR_HASH_KEY_STRING)) != NULL)
-        {
-            /* we already have parsed this subnet */
-            ip++;
-            continue;
-        }
 
         if ((mask = ap_strchr(addr, '/')))
             *mask++ = '\0';
 
         rv = apr_ipsubnet_create(ip, addr, mask, p);
 
-        if(APR_STATUS_IS_EINVAL(rv)) {
+        if (APR_STATUS_IS_EINVAL(rv)) {
             /* looked nothing like an IP address */
             return apr_psprintf(p, "ip address '%s' appears to be invalid", w);
         }
@@ -96,22 +87,21 @@ static const char *cmd_nolimit(cmd_parms *cmd, void *in_dconf, const char *a1)
                                 w, &rv);
         }
 
-        if (parsed_subnets)
-            apr_hash_set(parsed_subnets, w, APR_HASH_KEY_STRING, *ip);
         ip++;
     }
     return NULL;
 }
 
-static int ip_limited(request_rec *r, dconf_t *dconf)
+/* Returns 1 if the current useragent address is unlimited */
+static int ip_unlimited(request_rec *r, dconf_t *dconf)
 {
-    apr_ipsubnet_t **ip = (apr_ipsubnet_t **)parsed_require_line;
-    while (*ip) {
+    apr_ipsubnet_t **ip = dconf->unlimited;
+    while (ip && *ip) {
         if (apr_ipsubnet_test(*ip, r->useragent_addr))
-            return 0;
+            return 1;
         ip++;
     }
-    return 1;
+    return 0;
 }
 
 /* Snoop on the value of MaxClients/MaxRequestWorkers */
@@ -133,35 +123,40 @@ static int post_config(apr_pool_t *p, apr_pool_t *plog, apr_pool_t *ptemp,
     return OK;
 }
 
-static int breached(request_rec *r, dconf_t *cfg) 
+/* Returns 1 if the current request breaches the policy */
+static int ip_breached(request_rec *r, dconf_t *cfg) 
 { 
     worker_score ws_record;
-
     int ip_count = 0, idle = 0, minfree = 0;
+    int i = 0, j = 0;
 
-    if (cfg->threshold > 0 && maxclients > 0) { 
-        minfree = maxclients * cfg->threshold / 100;
+    ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "maxclients %d thresh %d", maxclients, cfg->worker_threshold);
+    if (cfg->worker_threshold > -1 && maxclients > 0) { 
+        minfree = (maxclients * cfg->worker_threshold / 100);
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "minfree %d", minfree);
     }
 
     for (i = 0; i < server_limit; ++i) {
         for (j = 0; j < thread_limit; ++j) {
-            ap_copy_scoreboard_worker(i, j, &ws_record);
-            switch (ws_record->status) {
+            ap_copy_scoreboard_worker(&ws_record, i, j);
+            switch (ws_record.status) {
                 case SERVER_BUSY_READ:
                 case SERVER_BUSY_WRITE:
-                case SERVER_BUSY_KEEPALIVE
+                case SERVER_BUSY_KEEPALIVE:
                 case SERVER_BUSY_LOG:
                 case SERVER_BUSY_DNS:
                 case SERVER_CLOSING:
                 case SERVER_GRACEFUL:
                     if (!strcmp(r->useragent_ip, ws_record.client)) { 
-                        ip_count++;
+                        if (ip_count++ >= cfg->maxconns) { 
+                            return 1;
+                        }
                     }
                     break;
                 default:
                 case SERVER_READY:
-                    if (idle++ > minfree) { 
-                        ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "no breach, too mnay free threads");
+                    if (idle++ >= minfree) { 
+                        ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "no breach, too many free threads (%d)", idle);
                         return 0;
                     }
                     break;
@@ -169,41 +164,50 @@ static int breached(request_rec *r, dconf_t *cfg)
         }
     }
    
-    if (ip_count >= cfg->maxconns) { 
-        return 1;
-    }
-
     return 0;
 }
 
-static int access_check(reques_rec *r)
+static int access_check(request_rec *r)
 { 
     dconf_t *cfg = ap_get_module_config(r->per_dir_config, &conn_limit_module);
+    ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "access_check cfg=%pp", cfg);
 
-    if (!dconf || dconf->maxconns < 1 || !ap_is_initial_req(r)) { 
+    if (!cfg || cfg->maxconns < 1 || !ap_is_initial_req(r)) { 
         return DECLINED;
     }
 
-    if (!ip_limited(r, cfg)) { 
+    if (ip_unlimited(r, cfg)) { 
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "IP is unlimited");
         return DECLINED;
     }
 
-    if (breached(r, cfg)) { 
-        if (cfg->logonly) { 
-            ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r, "breached");
+    if (ip_breached(r, cfg)) { 
+        ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r, APLOGNO() "breached");
+        if (!cfg->logonly) { 
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "return 503");
+            return HTTP_SERVICE_UNAVAILABLE;
         }
-        return HTTP_SERVICE_UNAVAILABLE;
     }
+    ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "not breached");
     return DECLINED;
 }
 
 
 static command_rec conn_limit_cmds[] = {
-    AP_INIT_RAW_ARGS("ConnLimitUnlimitedSourceAddresses", cmd_nolimit, NULL, RSRC_CONF,
-                  "Source addresses immune to limits"),
-    AP_INIT_TAKE1("MaxClients", set_max_workers, NULL, RSRC_CONF,
-                  "Deprecated name of MaxRequestWorkers"),
+    AP_INIT_RAW_ARGS("ConnectionLimitUnlimitedSourceAddresses", cmd_nolimit, NULL, 
+                     RSRC_CONF,
+                     "Source addresses immune to limits"),
+    AP_INIT_TAKE1("ConnectionLimit", ap_set_int_slot, 
+                   (void *)APR_OFFSETOF (dconf_t, maxconns), 
+                   ACCESS_CONF | RSRC_CONF,
+                  "Number of connections per client"),
+    AP_INIT_TAKE1("ConnectionBusyThreshold", ap_set_int_slot, 
+                   (void *)APR_OFFSETOF (dconf_t, worker_threshold), 
+                   ACCESS_CONF | RSRC_CONF,
+                  "Thread utilization minimum to enforce limits"),
     AP_INIT_TAKE1("MaxRequestWorkers", set_max_workers, NULL, RSRC_CONF,
+                  "Maximum number of threads alive at the same time"),
+    AP_INIT_TAKE1("MaxClients", set_max_workers, NULL, RSRC_CONF,
                   "Maximum number of threads alive at the same time"),
     {NULL},
 };
@@ -213,7 +217,7 @@ static void register_hooks(apr_pool_t *p)
     ap_hook_post_config(post_config, NULL, NULL, APR_HOOK_MIDDLE);
 
     /* Let responses be served out of the cache even if they'd breach limits */
-    ap_hook_access_checker(access_checker, NULL, NULL, APR_HOOK_MIDDLE);
+    ap_hook_access_checker(access_check, NULL, NULL, APR_HOOK_MIDDLE);
 }
 
 AP_DECLARE_MODULE(conn_limit) = {
