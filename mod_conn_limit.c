@@ -16,8 +16,6 @@
  *
  */
 
-/* XXX: merge config */
-
 #include "httpd.h"
 #include "http_config.h"
 #include "http_request.h"
@@ -50,12 +48,6 @@ typedef struct {
     apr_ipsubnet_t **unlimited;   /* Source addresses that are not limited     */
 
     unsigned int logonly:1;       /* TODO */
-
-    unsigned int maxconns_set:1;   
-    unsigned int worker_threshold_set:1;   
-    unsigned int local_worker_threshold_set:1;   
-    unsigned int unlimited_set:1;   
-    unsigned int reserved:27;   
 } dconf_t;
 
 static void *create_dirconf(apr_pool_t *p, char *path)
@@ -260,6 +252,10 @@ static command_rec conn_limit_cmds[] = {
                    (void *)APR_OFFSETOF (dconf_t, local_worker_threshold), 
                    ACCESS_CONF | RSRC_CONF,
                   "Local process thread utilization minimum needed to enforce limits"),
+    AP_INIT_TAKE1("ConnectionLimitLogOnly", ap_set_flag_slot, 
+                   (void *)APR_OFFSETOF (dconf_t, logonly), 
+                   ACCESS_CONF | RSRC_CONF,
+                  "Log breaches only, do not return a 503"),
     AP_INIT_TAKE1("MaxRequestWorkers", set_max_workers, NULL, RSRC_CONF,
                   "Maximum number of threads alive at the same time"),
     AP_INIT_TAKE1("MaxClients", set_max_workers, NULL, RSRC_CONF,
