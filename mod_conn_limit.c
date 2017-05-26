@@ -48,15 +48,41 @@ typedef struct {
     int worker_threshold;         /* Free thread % threshold to enforce limits */
     int local_worker_threshold;   /* Free thread % threshold in current proc   */
     apr_ipsubnet_t **unlimited;   /* Source addresses that are not limited     */
+
     unsigned int logonly:1;       /* TODO */
+
+    unsigned int maxconns_set:1;   
+    unsigned int worker_threshold_set:1;   
+    unsigned int local_worker_threshold_set:1;   
+    unsigned int unlimited_set:1;   
+    unsigned int reserved:27;   
 } dconf_t;
 
 static void *create_dirconf(apr_pool_t *p, char *path)
 {
     dconf_t *cfg = (dconf_t *) apr_pcalloc(p, sizeof (*cfg));
-    cfg->worker_threshold = 60;         /* Default to enforcement at > 60% utilization */
-    cfg->local_worker_threshold = 60;   /* Default to enforcement at > 60% utilization */
+    cfg->maxconns = cfg->worker_threshold = cfg->local_worker_threshold = -1;
     return cfg;
+}
+
+static void *merge_dirconf(apr_pool_t *p, void *basev, void *overridesv)
+{
+    dconf_t *a, *base, *over;
+
+    a     = (dconf_t *)apr_pcalloc(p, sizeof(dconf_t));
+    base  = (dconf_t *)basev;
+    over  = (dconf_t *)overridesv;
+  
+    a->maxconns = over->maxconns != -1 ? over->maxconns : base->maxconns;
+    a->worker_threshold = over->worker_threshold != -1 ? 
+                          over->worker_threshold : base->worker_threshold;
+    a->local_worker_threshold = over->maxconns != -1 ? 
+                          over->maxconns : base->maxconns;
+
+    /* not additive */
+    a->unlimited = over->unlimited_set ? over->unlimited : base->unlimited;
+
+    return a;
 }
 
 /* from mod_authz_host, collect a list of apr_ipsubnet_t's */
@@ -147,8 +173,8 @@ static int ip_breached(request_rec *r, dconf_t *cfg)
     int ip_count = 0, idle = 0, minfree = 0, local_minfree = 0;
     int i = 0, j = 0;
 
-    ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "maxthreads %d maxclients %d thresh %d local_thresh %d my_slot=%d", 
-                  max_threads, maxclients, cfg->worker_threshold, cfg->local_worker_threshold, my_slot);
+    ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "maxconns %d maxthreads %d maxclients %d thresh %d local_thresh %d my_slot=%d", 
+                  cfg->maxconns, max_threads, maxclients, cfg->worker_threshold, cfg->local_worker_threshold, my_slot);
 
     if (cfg->worker_threshold > -1 && maxclients > 0) { 
         minfree = (maxclients * cfg->worker_threshold / 100);
@@ -174,13 +200,18 @@ static int ip_breached(request_rec *r, dconf_t *cfg)
     for (i = 0, idle = 0; i < server_limit; ++i) {
         for (j = 0; j < thread_limit; ++j) {
             ap_copy_scoreboard_worker(&ws_record, i, j);
-            if (ws_record.status == SERVER_READY && idle++ >= minfree) { 
-                ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "no breach, too many free threads (%d/%d)", idle, max_threads);
-                return 0;
+            if (ws_record.status == SERVER_READY) { 
+                if (idle++ >= minfree) { 
+                    ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "no breach, too many free threads (%d/%d)", idle, max_threads);
+                    return 0;
+                }
             }
-            else if (!strcmp(r->useragent_ip, ws_record.client) && ip_count++ >= cfg->maxconns) { 
-                /* logged by caller */
-                return 1;
+            else if (!strcmp(r->useragent_ip, ws_record.client)) { 
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "  MATCH: uri=%s status=%d", ws_record.request, ws_record.status);
+                if (++ip_count > cfg->maxconns) { 
+                    /* don't count ourself. Logged by caller */
+                    return 1;
+                }
             }
         }
     }
@@ -220,7 +251,7 @@ static command_rec conn_limit_cmds[] = {
     AP_INIT_TAKE1("ConnectionLimit", ap_set_int_slot, 
                    (void *)APR_OFFSETOF (dconf_t, maxconns), 
                    ACCESS_CONF | RSRC_CONF,
-                  "Number of active connections per client"),
+                  "Number of active connections per client IP"),
     AP_INIT_TAKE1("ConnectionLimitBusyThreshold", ap_set_int_slot, 
                    (void *)APR_OFFSETOF (dconf_t, worker_threshold), 
                    ACCESS_CONF | RSRC_CONF,
@@ -247,7 +278,7 @@ static void register_hooks(apr_pool_t *p)
 AP_DECLARE_MODULE(conn_limit) = {
     STANDARD20_MODULE_STUFF,
     create_dirconf           , /* create per-dir    */
-    NULL,                      /* merge  per-dir    */
+    merge_dirconf,             /* merge  per-dir    */
     NULL,                      /* create per-server */
     NULL,                      /* merge  per-server */
     conn_limit_cmds,           
