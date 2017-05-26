@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * Based on mod_limitipconn by David Jao and Niklas Edmundsson
  */
 
 /* XXX: merge config */
@@ -30,13 +29,24 @@
 #include "apr_strings.h"
 #include "scoreboard.h"
 
+#if APR_HAVE_STDARG_H
+#include <stdarg.h>
+#endif
+#if APR_HAVE_UNISTD_H
+#include <unistd.h>
+#endif
+#if APR_HAVE_PROCESS_H
+#include <process.h>            /* for getpid() on Win32 */
+#endif
+
 module AP_MODULE_DECLARE_DATA conn_limit_module;
 
-static int server_limit, thread_limit, maxclients;
+static int server_limit, thread_limit, max_threads, maxclients, my_slot;
 
 typedef struct {
     int maxconns;                 /* Limit on number of parallel requests      */
     int worker_threshold;         /* Free thread % threshold to enforce limits */
+    int local_worker_threshold;   /* Free thread % threshold in current proc   */
     apr_ipsubnet_t **unlimited;   /* Source addresses that are not limited     */
     unsigned int logonly:1;       /* TODO */
 } dconf_t;
@@ -44,7 +54,8 @@ typedef struct {
 static void *create_dirconf(apr_pool_t *p, char *path)
 {
     dconf_t *cfg = (dconf_t *) apr_pcalloc(p, sizeof (*cfg));
-    cfg->worker_threshold = 60;   /* Default to enforcement at > 60% utilization */
+    cfg->worker_threshold = 60;         /* Default to enforcement at > 60% utilization */
+    cfg->local_worker_threshold = 60;   /* Default to enforcement at > 60% utilization */
     return cfg;
 }
 
@@ -58,8 +69,8 @@ static const char *cmd_nolimit(cmd_parms *cmd, void *in_dconf, const char *a1)
     apr_pool_t *p = cmd->pool;
     dconf_t *cfg = (dconf_t *) in_dconf;
     t = a1;
-    while ((w = ap_getword_conf(ptemp, &t)) && w[0])
-        count++;
+
+    while ((w = ap_getword_conf(ptemp, &t)) && w[0]) count++;
     if (count == 0)
         return "'ConnectionLimitUnlimitedSourceAddresses' requires an argument";
 
@@ -72,11 +83,10 @@ static const char *cmd_nolimit(cmd_parms *cmd, void *in_dconf, const char *a1)
         char *mask;
         apr_status_t rv;
 
-        if ((mask = ap_strchr(addr, '/')))
+        if ((mask = ap_strchr(addr, '/'))) 
             *mask++ = '\0';
 
         rv = apr_ipsubnet_create(ip, addr, mask, p);
-
         if (APR_STATUS_IS_EINVAL(rv)) {
             /* looked nothing like an IP address */
             return apr_psprintf(p, "ip address '%s' appears to be invalid", w);
@@ -85,7 +95,6 @@ static const char *cmd_nolimit(cmd_parms *cmd, void *in_dconf, const char *a1)
             return apr_psprintf(p, "ip address '%s' appears to be invalid: %pm",
                                 w, &rv);
         }
-
         ip++;
     }
     return NULL;
@@ -111,13 +120,22 @@ static const char *set_max_workers(cmd_parms * cmd, void *dummy,
     return NULL;
 }
 
+static void child_init(apr_pool_t *pchild, server_rec *s)
+{
+    apr_proc_t pid;
+    pid.pid = getpid();
+    my_slot = ap_find_child_by_pid(&pid);
+}
+
 static int post_config(apr_pool_t *p, apr_pool_t *plog, apr_pool_t *ptemp, 
                        server_rec *s)
 {
+  
     ap_mpm_query(AP_MPMQ_HARD_LIMIT_THREADS, &thread_limit);
     ap_mpm_query(AP_MPMQ_HARD_LIMIT_DAEMONS, &server_limit);
+    ap_mpm_query(AP_MPMQ_MAX_THREADS, &max_threads);
     if (maxclients == 0 && server_limit == 1) { 
-        maxclients = thread_limit; /* mpm_winnt */
+        maxclients = max_threads; /* mpm_winnt */
     }
     return OK;
 }
@@ -126,39 +144,43 @@ static int post_config(apr_pool_t *p, apr_pool_t *plog, apr_pool_t *ptemp,
 static int ip_breached(request_rec *r, dconf_t *cfg) 
 { 
     worker_score ws_record;
-    int ip_count = 0, idle = 0, minfree = 0;
+    int ip_count = 0, idle = 0, minfree = 0, local_minfree = 0;
     int i = 0, j = 0;
 
-    ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "maxclients %d thresh %d", maxclients, cfg->worker_threshold);
+    ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "maxthreads %d maxclients %d thresh %d local_thresh %d my_slot=%d", 
+                  max_threads, maxclients, cfg->worker_threshold, cfg->local_worker_threshold, my_slot);
+
     if (cfg->worker_threshold > -1 && maxclients > 0) { 
         minfree = (maxclients * cfg->worker_threshold / 100);
-        ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "minfree %d", minfree);
+    }
+    if (cfg->local_worker_threshold > -1 && max_threads > 0) { 
+        local_minfree = (max_threads * cfg->local_worker_threshold / 100);
     }
 
-    for (i = 0; i < server_limit; ++i) {
+    ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "minfree %d local_minfree %d", minfree, local_minfree);
+
+    /* Check for idle threads in local process */
+    if (local_minfree > 0) {  
+        for (j = 0; j < thread_limit; ++j) {
+            ap_copy_scoreboard_worker(&ws_record, my_slot, j);
+            if (ws_record.status == SERVER_READY && idle++ >= local_minfree) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "no breach, too many free threads in this process (%d/%d)", idle, max_threads);
+                return 0;
+            }
+        }
+    } 
+
+    /* Check for global idle threads & global connections from this IP */
+    for (i = 0, idle = 0; i < server_limit; ++i) {
         for (j = 0; j < thread_limit; ++j) {
             ap_copy_scoreboard_worker(&ws_record, i, j);
-            switch (ws_record.status) {
-                case SERVER_BUSY_READ:
-                case SERVER_BUSY_WRITE:
-                case SERVER_BUSY_KEEPALIVE:
-                case SERVER_BUSY_LOG:
-                case SERVER_BUSY_DNS:
-                case SERVER_CLOSING:
-                case SERVER_GRACEFUL:
-                    if (!strcmp(r->useragent_ip, ws_record.client)) { 
-                        if (ip_count++ >= cfg->maxconns) {  /* we're counting ourselves */
-                            return 1;
-                        }
-                    }
-                    break;
-                default:
-                case SERVER_READY:
-                    if (idle++ >= minfree) { 
-                        ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "no breach, too many free threads (%d)", idle);
-                        return 0;
-                    }
-                    break;
+            if (ws_record.status == SERVER_READY && idle++ >= minfree) { 
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "no breach, too many free threads (%d/%d)", idle, max_threads);
+                return 0;
+            }
+            else if (!strcmp(r->useragent_ip, ws_record.client) && ip_count++ >= cfg->maxconns) { 
+                /* logged by caller */
+                return 1;
             }
         }
     }
@@ -191,19 +213,22 @@ static int access_check(request_rec *r)
     return DECLINED;
 }
 
-
 static command_rec conn_limit_cmds[] = {
     AP_INIT_RAW_ARGS("ConnectionLimitUnlimitedSourceAddresses", cmd_nolimit, NULL, 
                      RSRC_CONF,
-                     "Source addresses immune to limits"),
+                     "Source addresses immune to connection limits"),
     AP_INIT_TAKE1("ConnectionLimit", ap_set_int_slot, 
                    (void *)APR_OFFSETOF (dconf_t, maxconns), 
                    ACCESS_CONF | RSRC_CONF,
-                  "Number of connections per client"),
-    AP_INIT_TAKE1("ConnectionBusyThreshold", ap_set_int_slot, 
+                  "Number of active connections per client"),
+    AP_INIT_TAKE1("ConnectionLimitBusyThreshold", ap_set_int_slot, 
                    (void *)APR_OFFSETOF (dconf_t, worker_threshold), 
                    ACCESS_CONF | RSRC_CONF,
-                  "Thread utilization minimum to enforce limits"),
+                  "Global thread utilization minimum needed to enforce limits"),
+    AP_INIT_TAKE1("ConnectionLimitBusyThresholdLocal", ap_set_int_slot, 
+                   (void *)APR_OFFSETOF (dconf_t, local_worker_threshold), 
+                   ACCESS_CONF | RSRC_CONF,
+                  "Local process thread utilization minimum needed to enforce limits"),
     AP_INIT_TAKE1("MaxRequestWorkers", set_max_workers, NULL, RSRC_CONF,
                   "Maximum number of threads alive at the same time"),
     AP_INIT_TAKE1("MaxClients", set_max_workers, NULL, RSRC_CONF,
@@ -214,6 +239,7 @@ static command_rec conn_limit_cmds[] = {
 static void register_hooks(apr_pool_t *p)
 {
     ap_hook_post_config(post_config, NULL, NULL, APR_HOOK_MIDDLE);
+    ap_hook_child_init(child_init, NULL, NULL, APR_HOOK_MIDDLE);
     /* Let responses be served out of the cache even if they'd breach limits */
     ap_hook_access_checker(access_check, NULL, NULL, APR_HOOK_MIDDLE);
 }
