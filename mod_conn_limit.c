@@ -46,8 +46,7 @@ typedef struct {
     int worker_threshold;         /* Free thread % threshold to enforce limits */
     int local_worker_threshold;   /* Free thread % threshold in current proc   */
     apr_ipsubnet_t **unlimited;   /* Source addresses that are not limited     */
-
-    unsigned int logonly:1;       /* TODO */
+    unsigned int logonly:1;       /* Don't return 503 */
 } dconf_t;
 
 static void *create_dirconf(apr_pool_t *p, char *path)
@@ -180,8 +179,8 @@ static int ip_breached(request_rec *r, dconf_t *cfg)
     /* Check for idle threads in local process */
     if (local_minfree > 0) {  
         for (j = 0; j < thread_limit; ++j) {
-            ap_copy_scoreboard_worker(&ws_record, my_slot, j);
-            if (ws_record.status == SERVER_READY && idle++ >= local_minfree) {
+            worker_score *ws = ap_get_scoreboard_worker(i, j);
+            if (ws_record->status == SERVER_READY && idle++ >= local_minfree) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "no breach, too many free threads in this process (%d/%d)", idle, max_threads);
                 return 0;
             }
@@ -191,19 +190,22 @@ static int ip_breached(request_rec *r, dconf_t *cfg)
     /* Check for global idle threads & global connections from this IP */
     for (i = 0, idle = 0; i < server_limit; ++i) {
         for (j = 0; j < thread_limit; ++j) {
-            ap_copy_scoreboard_worker(&ws_record, i, j);
-            if (ws_record.status == SERVER_READY) { 
+            worker_score *ws = ap_get_scoreboard_worker(i, j);
+            if (ws->status == SERVER_READY) { 
                 if (idle++ >= minfree) { 
                     ap_log_rerror(APLOG_MARK, APLOG_TRACE5, 0, r, "no breach, too many free threads (%d/%d)", idle, max_threads);
                     return 0;
                 }
             }
-            else if (!strcmp(r->useragent_ip, ws_record.client)) { 
-                ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "  MATCH: uri=%s status=%d", ws_record.request, ws_record.status);
-                if (++ip_count > cfg->maxconns) { 
-                    /* don't count ourself. Logged by caller */
-                    return 1;
-                }
+            else { /* busy slot */ 
+                 ap_copy_scoreboard_worker(&ws_record, i, j);
+                 if (!strcmp(r->useragent_ip, ws_record.client)) { 
+                     ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "  MATCH: uri=%s status=%d", ws_record.request, ws_record.status);
+                     if (++ip_count > cfg->maxconns) { 
+                         /* don't count ourself. Logged by caller */
+                         return 1;
+                     }
+                 }
             }
         }
     }
