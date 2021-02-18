@@ -109,7 +109,7 @@ static int ibmallgroups_check_user_access(request_rec *r)
             "ibmallgroups: Userid is blank, AuthType=%s",
             r->ap_auth_type);
     }
-    allgroups_attribute_name = apr_pstrcat(r->pool, "AUTHENTICATE_", sec->attr);
+    allgroups_attribute_name = apr_pstrcat(r->pool, "AUTHENTICATE_", sec->attr, NULL);
 
     /* Loop through the requirements array until there's no elements
      * left, or something causes a return from inside the loop */
